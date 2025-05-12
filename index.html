@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebGL 3D 魔術方塊</title>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Inter', sans-serif; background-color: #1f2937; /* bg-gray-800 */ color: #f3f4f6; /* text-gray-100 */ }
+        #rubiksCubeCanvas { display: block; width: 100%; height: 100%; }
+        .controls { position: absolute; top: 10px; left: 10px; background-color: rgba(31, 41, 55, 0.8); /* bg-gray-800 with opacity */ padding: 10px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); max-height: calc(100vh - 20px); overflow-y: auto; }
+        .control-panel-title { font-size: 1.25rem; font-weight: bold; margin-bottom: 10px; color: #d1d5db; /* text-gray-300 */ text-align: center;}
+        .control-group { margin-bottom: 15px; }
+        .control-group h3 { font-size: 1rem; font-weight: 600; margin-bottom: 8px; color: #9ca3af; /* text-gray-400 */ }
+        .control-group button {
+            background-color: #374151; /* bg-gray-700 */
+            color: #f3f4f6; /* text-gray-100 */
+            border: 1px solid #4b5563; /* border-gray-600 */
+            padding: 8px 12px;
+            margin: 4px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            font-size: 0.9rem;
+        }
+        .control-group button:hover { background-color: #4b5563; /* bg-gray-600 */ }
+        .control-group button:active { background-color: #52525b; /* bg-zinc-600 */ }
+        .control-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 5px; }
+        #message-box {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background-color: #1f2937; /* bg-gray-800 */
+            color: #f3f4f6; /* text-gray-100 */
+            padding: 10px 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.5);
+            z-index: 1000;
+            display: none; /* Hidden by default */
+            border: 1px solid #4b5563; /* border-gray-600 */
+        }
+        /* For smaller screens, make controls scrollable and potentially wider */
+        @media (max-width: 640px) {
+            .controls {
+                width: calc(100% - 20px);
+                max-height: 50vh;
+            }
+            .control-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="rubiksCubeCanvas"></canvas>
+    <div class="controls">
+        <div class="control-panel-title">魔術方塊控制器</div>
+
+        <div class="control-group">
+            <h3>面旋轉 (順時針 / 逆時針)</h3>
+            <div class="control-grid">
+                <button onclick="rotateFace('F', true)">F</button>
+                <button onclick="rotateFace('F', false)">F'</button>
+                <button onclick="rotateFace('B', true)">B</button>
+                <button onclick="rotateFace('B', false)">B'</button>
+                <button onclick="rotateFace('U', true)">U</button>
+                <button onclick="rotateFace('U', false)">U'</button>
+                <button onclick="rotateFace('D', true)">D</button>
+                <button onclick="rotateFace('D', false)">D'</button>
+                <button onclick="rotateFace('L', true)">L</button>
+                <button onclick="rotateFace('L', false)">L'</button>
+                <button onclick="rotateFace('R', true)">R</button>
+                <button onclick="rotateFace('R', false)">R'</button>
+            </div>
+        </div>
+        <div class="control-group">
+            <h3>整體操作</h3>
+            <div class="control-grid">
+                <button onclick="resetCube()">重置</button>
+                <button onclick="scrambleCube()">打亂</button>
+            </div>
+        </div>
+         <div class="control-group">
+            <h3>視角</h3>
+            <button onclick="resetCamera()">重置視角</button>
+            <button onclick="toggleCameraMode()">切換視角</button>
+        </div>
+        <div class="control-group">
+            <h3>背景和方塊材質</h3>
+            <button onclick="toggleBackground()">切換背景</button>
+            <button onclick="toggleReflection()">切換方塊反射效果</button>
+        </div>
+        <div class="control-group">
+            <h3>說明</h3>
+            <p class="text-xs text-gray-400">使用滑鼠拖曳旋轉視角，滾輪縮放。</p>
+            <p class="text-xs text-gray-400">鍵盤快捷鍵 (Shift為逆時針): F, B, U, D, L, R</p>
+            <p class="text-xs text-gray-400">鍵盤快捷鍵 C 可以切換視角</p>
+            <p class="text-xs text-gray-400">鍵盤快捷鍵 B 可以切換背景<br> ( 純色或是Environment Cube Map ) </p>
+            <p class="text-xs text-gray-400">鍵盤快捷鍵 M 可以切換材質</p><br>
+            <h3 class="text-xs text-gray-400">Author : Andy Lu</h3>
+        </div>
+        
+    </div>
+
+    <div id="message-box"></div>
+
+    <script type="module" src="cube.js"></script>
+</body>
+</html>
