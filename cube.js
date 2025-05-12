@@ -69,8 +69,7 @@ let animationQueue = [];
 const ANIMATION_SPEED = 0.035; // Radians per frame, adjust for speed (slightly faster)
 let currentAnimation = null;
 
-// --- NEW: Auto Rotation State ---
-let isAutoRotating = false; // Start as false, will be set true in main()
+let isAutoRotating = false; 
 
 // Cubie dimensions and spacing
 const CUBIE_SIZE = 0.95; // Size of a single cubie
@@ -1526,9 +1525,8 @@ function main() {
         }
     });
 
-    // --- Set Initial Auto-Rotate State ---
     isAutoRotating = false; 
-    showMessage("魔術方塊載入完成。自動隨機旋轉已啟用 (按 E 鍵關閉)", 4000);
+    
 
 
     // --- Render Loop ---
