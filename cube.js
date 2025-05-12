@@ -36,6 +36,9 @@ let animationQueue = [];
 const ANIMATION_SPEED = 0.035; // Radians per frame, adjust for speed (slightly faster)
 let currentAnimation = null;
 
+// --- NEW: Auto Rotation State ---
+let isAutoRotating = false; // Start as false, will be set true in main()
+
 // Cubie dimensions and spacing
 const CUBIE_SIZE = 0.95; // Size of a single cubie
 const CUBIE_SPACING = 0.05; // Space between cubies
@@ -59,7 +62,6 @@ const FACE_COLOR_NAMES = ['GREEN', 'BLUE', 'WHITE', 'YELLOW', 'ORANGE', 'RED'];
 const FACE_INDICES = { F: 0, B: 1, U: 2, D: 3, L: 4, R: 5 };
 
 
-// --- Shader Definitions (Rubik's Cube - Improved Lighting) ---
 // --- Shader Definitions (Rubik's Cube - Improved Lighting + Reflection) ---
 const vsSource = `
     attribute vec4 aVertexPosition;
@@ -291,6 +293,11 @@ function loadCubeMap(faceUrls) {
                 isSkyboxReady = true;
                 console.log("Cube map loaded successfully.");
                  showMessage("天空盒背景已載入 (按 B 切換)", 2000);
+                 // Try enabling reflection if it was toggled on before texture loaded
+                 if (window.toggleReflection && enableReflection) {
+                     console.log("Attempting to re-enable reflection after cubemap load.");
+                     // No state change needed, just notify user? Or maybe re-call toggle?
+                 }
             }
         };
          image.onerror = function() {
@@ -298,6 +305,8 @@ function loadCubeMap(faceUrls) {
              facesLoaded++; // Still count it as "processed" to avoid hanging
              if (facesLoaded === 6 && !isSkyboxReady) { // Check if any succeeded
                  console.error("Failed to load all cubemap faces.");
+                 backgroundMode = 'color'; // Force back to solid color if loading fails
+                 enableReflection = false; // Disable reflection if cubemap fails
              }
          }
         image.src = url;
@@ -600,7 +609,7 @@ class RubiksCube {
     }
 
     rotateFace(face, clockwise) {
-        if (isAnimating && animationQueue.length > 3) return; // Limit queue
+        if (isAnimating && animationQueue.length > 10) return; // Limit queue more strictly maybe?
 
         animationQueue.push({ face, clockwise });
         if (!isAnimating) {
@@ -1133,6 +1142,18 @@ function drawSkybox(viewMatrix, projectionMatrix) {
 let enableReflection = false; // Start with reflection off
 let reflectionStrength = 0.4; // Default reflectivity (adjust as needed)
 
+// --- NEW: Function to perform a random move ---
+function performRandomMove() {
+    if (!rubiksCube) return; // Safety check
+
+    const moves = ['F', 'B', 'U', 'D', 'L', 'R'];
+    const randomFace = moves[Math.floor(Math.random() * moves.length)];
+    const randomClockwise = Math.random() < 0.5;
+
+    // Add the random move to the queue
+    rubiksCube.rotateFace(randomFace, randomClockwise);
+}
+
 // --- Main Application Logic ---
 function main() {
     const canvas = document.getElementById('rubiksCubeCanvas');
@@ -1180,23 +1201,23 @@ function main() {
     // --- Initialize Skybox Shader Program ---
     const skyboxProgram = initShaderProgram(skyboxVsSource, skyboxFsSource);
      if (skyboxProgram) {
-        skyboxProgramInfo = {
-            program: skyboxProgram,
-            attribLocations: {
-                vertexPosition: gl.getAttribLocation(skyboxProgram, 'aVertexPosition'),
-            },
-            uniformLocations: {
-                projectionMatrix: gl.getUniformLocation(skyboxProgram, 'uProjectionMatrix'),
-                viewMatrix: gl.getUniformLocation(skyboxProgram, 'uViewMatrix'),
-                skyboxSampler: gl.getUniformLocation(skyboxProgram, 'uSkyboxSampler'),
-            },
-        };
-        skyboxBuffers = initSkyboxBuffers();
-        skyboxTexture = loadCubeMap(CUBEMAP_FACES); // Start loading the cubemap
-    } else {
-         console.error("Failed to initialize skybox shader program.");
-         // Continue without skybox functionality
-    }
+         skyboxProgramInfo = {
+             program: skyboxProgram,
+             attribLocations: {
+                 vertexPosition: gl.getAttribLocation(skyboxProgram, 'aVertexPosition'),
+             },
+             uniformLocations: {
+                 projectionMatrix: gl.getUniformLocation(skyboxProgram, 'uProjectionMatrix'),
+                 viewMatrix: gl.getUniformLocation(skyboxProgram, 'uViewMatrix'),
+                 skyboxSampler: gl.getUniformLocation(skyboxProgram, 'uSkyboxSampler'),
+             },
+         };
+         skyboxBuffers = initSkyboxBuffers();
+         skyboxTexture = loadCubeMap(CUBEMAP_FACES); // Start loading the cubemap
+     } else {
+          console.error("Failed to initialize skybox shader program.");
+          // Continue without skybox functionality
+     }
 
 
     // --- Initialize Scene Objects ---
@@ -1207,7 +1228,7 @@ function main() {
 
     // --- Event Listeners ---
     document.addEventListener('keydown', (event) => {
-        // Allow camera/background toggle even during animation
+        // Allow camera/background/reflection toggle even during animation
         if (event.key.toUpperCase() === 'C') {
             event.preventDefault();
             toggleCameraMode();
@@ -1219,15 +1240,31 @@ function main() {
             toggleBackground();
             return;
         }
-
+        // --- NEW: Reflection Toggle ---
         if (event.key.toUpperCase() === 'M') {
             event.preventDefault();
             toggleReflection();
             return;
        }
+        // --- NEW: Auto-Rotate Toggle ---
+        if (event.key.toUpperCase() === 'E') {
+            event.preventDefault();
+            isAutoRotating = !isAutoRotating;
+            if (isAutoRotating) {
+                showMessage("啟用自動隨機旋轉 (按 E 鍵關閉)");
+                 // Optional: trigger the first random move immediately if idle
+                 if (!isAnimating && animationQueue.length === 0) {
+                     performRandomMove();
+                 }
+            } else {
+                showMessage("禁用自動隨機旋轉 (按 E 鍵開啟)");
+            }
+            return;
+        }
 
-        // Limit new moves if animating heavily
-        if (isAnimating && animationQueue.length > 2) return;
+
+        // Limit new manual moves if animating heavily or auto-rotating? (Maybe not needed if queue is handled well)
+        // if (isAnimating && animationQueue.length > 2) return;
 
         const key = event.key.toUpperCase();
         const clockwise = !event.shiftKey; // Shift key reverses direction (makes it CCW)
@@ -1237,9 +1274,21 @@ function main() {
 
         if (face) {
             event.preventDefault(); // Prevent browser default actions for F, R etc.
+
+            // --- Optionally disable auto-rotate when a manual move is made ---
+            // if (isAutoRotating) {
+            //     isAutoRotating = false;
+            //     showMessage("手動旋轉，已禁用自動旋轉 (按 E 鍵開啟)");
+            // }
+
             rubiksCube.rotateFace(face, clockwise);
         }
     });
+
+    // --- Set Initial Auto-Rotate State ---
+    isAutoRotating = true; // Enable auto-rotate on load
+    showMessage("魔術方塊載入完成。自動隨機旋轉已啟用 (按 E 鍵關閉)", 4000);
+
 
     // --- Render Loop ---
     function render(now) {
@@ -1275,7 +1324,7 @@ function main() {
             gl.activeTexture(gl.TEXTURE1); // Use texture unit 1 for environment map
             gl.bindTexture(gl.TEXTURE_CUBE_MAP, skyboxTexture);
             gl.uniform1i(programInfo.uniformLocations.environmentSampler, 1); // Tell shader sampler to use texture unit 1
-    
+
             // Set reflection toggle and strength (pass boolean as 0 or 1)
             gl.uniform1i(programInfo.uniformLocations.enableReflection, enableReflection ? 1 : 0);
             gl.uniform1f(programInfo.uniformLocations.reflectivity, reflectionStrength);
@@ -1284,14 +1333,22 @@ function main() {
              gl.uniform1i(programInfo.uniformLocations.enableReflection, 0);
         }
 
-        // --- 3. Update and Draw Rubik's Cube ---
+        // --- 3. Update Cube Animation ---
         if (isAnimating) {
             rubiksCube.updateAnimation();
         }
+
+        // --- 4. NEW: Check for Auto-Rotation ---
+        // Add a new random move if auto-rotating is on AND the cube is currently idle
+        if (isAutoRotating && !isAnimating && animationQueue.length === 0) {
+             performRandomMove();
+        }
+
+        // --- 5. Draw Rubik's Cube ---
         // Pass the *cube's* programInfo and current camera matrices
         rubiksCube.draw(programInfo, currentCamera.viewMatrix, currentCamera.projectionMatrix);
 
-        // --- 4. Request Next Frame ---
+        // --- 6. Request Next Frame ---
         requestAnimationFrame(render);
     }
     requestAnimationFrame(render); // Start the render loop
@@ -1300,9 +1357,30 @@ function main() {
 // --- UI Interaction Functions ---
 window.rotateFace = (face, clockwise) => { rubiksCube.rotateFace(face, clockwise); };
 
+window.autoPlaytrigger = () => {
+    isAutoRotating = !isAutoRotating;
+    if (isAutoRotating) {
+        showMessage("啟用自動隨機旋轉 (按 E 鍵關閉)");
+            // Optional: trigger the first random move immediately if idle
+            if (!isAnimating && animationQueue.length === 0) {
+                performRandomMove();
+            }
+    } else {
+        showMessage("禁用自動隨機旋轉 (按 E 鍵開啟)");
+    }
+    return;
+}
+
 window.resetCube = () => {
+    // --- NEW: Disable auto-rotate when resetting ---
+    if (isAutoRotating) {
+        isAutoRotating = false;
+         showMessage("魔術方塊已重置，自動旋轉已禁用。");
+    } else {
+        showMessage("魔術方塊已重置。");
+    }
     rubiksCube.reset();
-    showMessage("魔術方塊已重置。");
+
 };
 
 window.resetCamera = () => {
@@ -1364,6 +1442,14 @@ window.scrambleCube = () => {
         showMessage("請等待目前動畫完成。");
         return;
     }
+    // --- NEW: Disable auto-rotate when scrambling ---
+    if (isAutoRotating) {
+        isAutoRotating = false;
+        showMessage("開始打亂，自動旋轉已禁用 (按 E 鍵開啟)");
+    } else {
+         showMessage("開始隨機打亂...");
+    }
+
     const moves = ['F', 'B', 'U', 'D', 'L', 'R'];
     const numScrambleMoves = 20 + Math.floor(Math.random() * 10);
     let scrambleSequence = [];
@@ -1383,7 +1469,8 @@ window.scrambleCube = () => {
     if (!isAnimating) {
         rubiksCube.processAnimationQueue();
     }
-    showMessage(`開始 ${numScrambleMoves} 步隨機打亂...`);
+    // Message is now shown earlier
+    // showMessage(`開始 ${numScrambleMoves} 步隨機打亂...`);
 };
 
 let messageTimeout;
@@ -1402,5 +1489,7 @@ window.onerror = function (message, source, lineno, colno, error) {
   showMessage(`發生錯誤: ${message}`, 5000); // Display error to user
   return true; // Prevent default browser error handling
 };
+
+
 
 window.onload = main;
