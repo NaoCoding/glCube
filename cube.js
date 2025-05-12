@@ -1527,7 +1527,7 @@ function main() {
     });
 
     // --- Set Initial Auto-Rotate State ---
-    isAutoRotating = true; // Enable auto-rotate on load
+    isAutoRotating = false; 
     showMessage("魔術方塊載入完成。自動隨機旋轉已啟用 (按 E 鍵關閉)", 4000);
 
 
