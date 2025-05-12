@@ -19,6 +19,39 @@ let skyboxTexture = null;
 let skyboxProgramInfo = null;
 let skyboxBuffers = null;
 let isSkyboxReady = false;
+const FACE_TEXTURE_PATHS = {
+    WHITE:  './assets/webgl.png', // Replace with your actual paths
+    YELLOW: './assets/webgl.png',
+    RED:    './assets/webgl.png',
+    ORANGE: './assets/webgl.png',
+    BLUE:   './assets/webgl.png',
+    GREEN:  './assets/webgl.png',
+}
+/*const FACE_TEXTURE_PATHS = {
+    WHITE:  './assets/custom/logo_mygo.png', // Replace with your actual paths
+    YELLOW: './assets/custom/mygo_character1.png',
+    RED:    './assets/custom/mygo_character2.png',
+    ORANGE: './assets/custom/mygo_character3.png',
+    BLUE:   './assets/custom/mygo_character4.png',
+    GREEN:  './assets/custom/mygo_character5.png',
+    // Optional: BLACK: './texture_black.png' // For the inner parts
+};*/
+
+const FACE_COLOR_NAMES = ['GREEN', 'BLUE', 'WHITE', 'YELLOW', 'ORANGE', 'RED']; // <-- 定義在這裡
+const FACE_INDICES = { F: 0, B: 1, U: 2, D: 3, L: 4, R: 5 };
+
+
+let faceTextures = {}; // Object to hold loaded textures, keyed by color name
+let faceTexturesReadyCount = 0; // Counter for loaded textures
+const TOTAL_FACE_TEXTURES = Object.keys(FACE_TEXTURE_PATHS).length;
+
+const COLOR_INDICES = {}; // Map color names to indices 0-5
+FACE_COLOR_NAMES.forEach((name, index) => {
+    COLOR_INDICES[name] = index;
+});
+const BLACK_INDEX = 6;
+
+let currentMaterialMode = 'color'; // 'color', 'reflection', 'texture'
 const CUBEMAP_BASE_PATH = './cubemap/'; // <--- IMPORTANT: Set path to your cubemap images
 const CUBEMAP_FACES = [
     CUBEMAP_BASE_PATH + 'posx.jpg', // Right
@@ -58,112 +91,145 @@ const COLORS = {
 
 // Face name to color mapping (standard Western color scheme)
 // F, B, U, D, L, R
-const FACE_COLOR_NAMES = ['GREEN', 'BLUE', 'WHITE', 'YELLOW', 'ORANGE', 'RED'];
-const FACE_INDICES = { F: 0, B: 1, U: 2, D: 3, L: 4, R: 5 };
 
 
 // --- Shader Definitions (Rubik's Cube - Improved Lighting + Reflection) ---
 const vsSource = `
     attribute vec4 aVertexPosition;
     attribute vec3 aVertexNormal;
-    attribute vec4 aVertexColor;
+    attribute vec4 aVertexColor; // Still useful for non-textured modes or black faces
+    attribute vec2 aTextureCoord;
+    attribute float aFaceColorIndex; // <-- NEW: Index identifying the face's design color
 
     uniform mat4 uModelMatrix;
     uniform mat4 uViewMatrix;
     uniform mat4 uProjectionMatrix;
-    uniform mat3 uNormalMatrix; // For transforming normals
+    uniform mat3 uNormalMatrix;
 
-    varying highp vec3 vFragPos_World; // Fragment position in world space
-    varying highp vec3 vNormal_World;  // Transformed normal in world space
-    varying lowp vec4 vColor;          // Base color from vertex attribute
+    varying highp vec3 vFragPos_World;
+    varying highp vec3 vNormal_World;
+    varying lowp vec4 vColor;
+    varying highp vec2 vTextureCoord;
+    varying highp float vFaceColorIndex; // <-- NEW: Pass index to fragment shader
 
     void main(void) {
-        // Calculate world position of the vertex
+        // ... (position, normal calculation)
         vec4 worldPos = uModelMatrix * aVertexPosition;
-        vFragPos_World = worldPos.xyz / worldPos.w; // Use w for perspective correction if needed, usually fine without for position
-
-        // Transform normal to world space using the normal matrix
+        vFragPos_World = worldPos.xyz / worldPos.w;
         vNormal_World = normalize(uNormalMatrix * aVertexNormal);
-
-        // Standard position calculation for rendering
         gl_Position = uProjectionMatrix * uViewMatrix * worldPos;
 
-        // Pass color through
+        // Pass through
         vColor = aVertexColor;
+        vTextureCoord = aTextureCoord;
+        vFaceColorIndex = aFaceColorIndex; // <-- NEW
     }
 `;
 
 const fsSource = `
-    precision highp float; // Use highp for vectors used in calculations
+    precision highp float;
 
     varying highp vec3 vFragPos_World;
     varying highp vec3 vNormal_World;
-    varying lowp vec4 vColor; // Base color of the fragment (sticker/plastic)
+    varying lowp vec4 vColor;
+    varying highp vec2 vTextureCoord;
+    varying highp float vFaceColorIndex; // <-- NEW: Received face color index
 
-    // Existing uniforms
-    uniform vec3 uEyePosition_World;   // Camera position in world space
-    uniform vec3 uLightPosition_World; // Position of the light source
-    uniform vec3 uLightColor;
+    // Lighting & Reflection Uniforms (same as before)
+    uniform vec3 uEyePosition_World;
+    uniform vec3 uLightPosition_World;
+    // ... other lighting/reflection uniforms ...
+    uniform samplerCube uEnvironmentSampler;
+    uniform bool uEnableReflection;
+    uniform float uReflectivity;
     uniform vec3 uAmbientLightColor;
+    uniform vec3 uLightColor;
     uniform float uShininess;
 
-    // --- NEW: Reflection Uniforms ---
-    uniform samplerCube uEnvironmentSampler; // The cubemap texture
-    uniform bool uEnableReflection;          // Toggle reflection on/off
-    uniform float uReflectivity;             // How much reflection (0.0 to 1.0)
+
+    // --- NEW: Multi-Texture Mapping Uniforms ---
+    uniform int uMaterialMode; // 0: Color, 1: Reflection, 2: Texture
+    uniform sampler2D uTextureSamplerWhite;  // Index 0
+    uniform sampler2D uTextureSamplerYellow; // Index 1
+    uniform sampler2D uTextureSamplerRed;    // Index 2
+    uniform sampler2D uTextureSamplerOrange; // Index 3
+    uniform sampler2D uTextureSamplerBlue;   // Index 4
+    uniform sampler2D uTextureSamplerGreen;  // Index 5
+    // Optional: uniform sampler2D uTextureSamplerBlack; // Index 6
 
     void main(void) {
-        // --- Standard Lighting Calculation (Phong) ---
+        // --- Basic Lighting Vectors ---
         vec3 norm = normalize(vNormal_World);
         vec3 lightDir = normalize(uLightPosition_World - vFragPos_World);
         vec3 viewDir = normalize(uEyePosition_World - vFragPos_World);
+        vec3 reflectDirLight = reflect(-lightDir, norm);
 
-        // Ambient
-        vec3 ambient = uAmbientLightColor * vColor.rgb;
-
-        // Diffuse
-        float diff = max(dot(norm, lightDir), 0.0);
-        vec3 diffuse = uLightColor * diff * vColor.rgb;
-
-        // Specular
-        vec3 reflectDirLight = reflect(-lightDir, norm); // Reflection of light source
-        float spec = pow(max(dot(viewDir, reflectDirLight), 0.0), uShininess);
-        vec3 specular = uLightColor * spec * vec3(0.8, 0.8, 0.8); // Specular highlight color
-
-        // Combine basic lighting components
-        vec3 lightingColor = ambient + diffuse + specular;
-
-        // --- NEW: Reflection Calculation ---
-        vec3 reflectionColor = vec3(0.0); // Initialize reflection color
-        if (uEnableReflection) {
-            // Calculate reflection vector for the *environment*
-            // reflect() expects incident vector (from eye to surface), so negate viewDir
-            vec3 reflectDirEnv = reflect(-viewDir, norm);
-
-            // Sample the environment cubemap
-            // Use .rgb to discard alpha if the cubemap has it
-            reflectionColor = textureCube(uEnvironmentSampler, reflectDirEnv).rgb;
-
-             // Optional: Modulate reflection by base color (tints reflection)
-             // reflectionColor *= vColor.rgb;
-        }
-
-        // --- Combine Lighting and Reflection ---
-        // Mix the base lighting color with the reflection color using reflectivity
-        // If reflection is disabled, reflectivity effectively has no impact if reflectionColor is black.
-        // Or more explicitly:
         vec3 finalColor;
-        if (uEnableReflection) {
-             finalColor = mix(lightingColor, reflectionColor, uReflectivity);
-        } else {
-             finalColor = lightingColor;
+        float finalAlpha = 1.0;
+
+        // --- Determine final color based on material mode ---
+
+        if (uMaterialMode == 2) { // --- Texture Mapping Mode ---
+            vec4 texColor;
+            // Cast float index to int for safer comparison
+            int index = int(vFaceColorIndex + 0.5); // Add 0.5 to handle potential float inaccuracies
+
+            // Select texture based on index
+            if (index == 0) {       // WHITE
+                texColor = texture2D(uTextureSamplerWhite, vTextureCoord);
+            } else if (index == 1) { // YELLOW
+                texColor = texture2D(uTextureSamplerYellow, vTextureCoord);
+            } else if (index == 2) { // RED
+                texColor = texture2D(uTextureSamplerRed, vTextureCoord);
+            } else if (index == 3) { // ORANGE
+                texColor = texture2D(uTextureSamplerOrange, vTextureCoord);
+            } else if (index == 4) { // BLUE
+                texColor = texture2D(uTextureSamplerBlue, vTextureCoord);
+            } else if (index == 5) { // GREEN
+                texColor = texture2D(uTextureSamplerGreen, vTextureCoord);
+            } else {                 // BLACK or other default
+                texColor = vColor; // Use the base vertex color (should be black)
+                // Optional: texColor = texture2D(uTextureSamplerBlack, vTextureCoord);
+            }
+
+            // Combine texture with Phong lighting (same as before)
+            vec3 ambient = uAmbientLightColor * texColor.rgb;
+            float diff = max(dot(norm, lightDir), 0.0);
+            vec3 diffuse = uLightColor * diff * texColor.rgb;
+            float spec = pow(max(dot(viewDir, reflectDirLight), 0.0), uShininess);
+            vec3 specular = uLightColor * spec * vec3(0.8, 0.8, 0.8);
+            vec3 baseTexturedColor = ambient + diffuse + specular;
+            finalAlpha = texColor.a;
+
+            // Mix with reflection if enabled
+             if (uEnableReflection && index < 6) { // Only apply reflection to colored faces perhaps?
+                 vec3 reflectDirEnv = reflect(-viewDir, norm);
+                 vec3 reflectionColor = textureCube(uEnvironmentSampler, reflectDirEnv).rgb;
+                 finalColor = mix(baseTexturedColor, reflectionColor, uReflectivity);
+             } else {
+                  finalColor = baseTexturedColor;
+             }
+
+        } else { // --- Solid Color or Reflection Mode ---
+            // Calculate base lighting using vColor (remains the same)
+            vec3 ambient = uAmbientLightColor * vColor.rgb;
+            float diff = max(dot(norm, lightDir), 0.0);
+            vec3 diffuse = uLightColor * diff * vColor.rgb;
+            float spec = pow(max(dot(viewDir, reflectDirLight), 0.0), uShininess);
+            vec3 specular = uLightColor * spec * vec3(0.8, 0.8, 0.8);
+            vec3 lightingColor = ambient + diffuse + specular;
+
+            if (uMaterialMode == 1 && uEnableReflection) { // Reflection Mode + Effect Enabled
+                 vec3 reflectDirEnv = reflect(-viewDir, norm);
+                 vec3 reflectionColor = textureCube(uEnvironmentSampler, reflectDirEnv).rgb;
+                 finalColor = mix(lightingColor, reflectionColor, uReflectivity);
+            } else { // Solid Color Mode (or Reflection Mode but effect disabled)
+                 finalColor = lightingColor;
+            }
+            finalAlpha = vColor.a;
         }
 
-
-        // Ensure output color is within valid range (optional but good practice)
-        // finalColor = clamp(finalColor, 0.0, 1.0);
-
-        gl_FragColor = vec4(finalColor, vColor.a); // Use alpha from original vertex color
+        gl_FragColor = vec4(finalColor, finalAlpha);
     }
 `;
 
@@ -252,6 +318,58 @@ function initShaderProgram(vsSource, fsSource) {
         return null;
     }
     return program;
+}
+
+function loadTexture(url, colorName, callback) { // Added colorName and callback
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+
+    // Placeholder pixel
+    // ... (placeholder logic remains the same) ...
+    const level = 0;
+    const internalFormat = gl.RGBA;
+    const width = 1;
+    const height = 1;
+    const border = 0;
+    const srcFormat = gl.RGBA;
+    const srcType = gl.UNSIGNED_BYTE;
+    const pixel = new Uint8Array([0, 0, 255, 255]); // opaque blue
+    gl.texImage2D(gl.TEXTURE_2D, level, internalFormat,
+                  width, height, border, srcFormat, srcType,
+                  pixel);
+
+
+    const image = new Image();
+    image.onload = function() {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, level, internalFormat,
+                      srcFormat, srcType, image);
+
+        // Power-of-2 check and mipmap generation
+        if (isPowerOf2(image.width) && isPowerOf2(image.height)) {
+           gl.generateMipmap(gl.TEXTURE_2D);
+           gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        } else {
+           gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+           gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+           gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        }
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+        console.log(`Texture for ${colorName} loaded successfully.`);
+        callback(null, colorName); // Signal success
+    };
+    image.onerror = function() {
+        console.error(`Error loading texture ${colorName}: ${url}`);
+        callback(new Error(`Failed to load ${colorName}`), colorName); // Signal error
+    }
+    image.src = url;
+
+    return texture; // Return texture object immediately (it holds placeholder initially)
+}
+
+function isPowerOf2(value) {
+    return (value & (value - 1)) == 0;
 }
 
 // --- NEW: Cube Map Texture Loading ---
@@ -489,6 +607,45 @@ class Cubie {
             20, 21, 22,   20, 22, 23, // Left
         ];
 
+        const faceTexCoords = [
+            0.0, 0.0,   1.0, 0.0,   1.0, 1.0,   0.0, 1.0, // Standard UV layout
+            // You might need to flip/rotate these per face depending on your texture atlas
+            // and vertex order if you want specific orientations.
+            // For a single repeating texture, this is usually fine.
+        ];
+        const textureCoordinates = [];
+        for (let i = 0; i < 6; i++) { // For each of the 6 faces
+            textureCoordinates.push(...faceTexCoords);
+        }
+
+        const faceColorIndices = [];
+
+        geometryFaceOrder.forEach(logicalFaceIndex => {
+            // Get the *current* color name assigned to this logical face of the cubie
+            const colorName = this.faceColors[logicalFaceIndex];
+            let colorIndex = -1; // Default for black or unassigned
+
+            if (colorName !== 'BLACK' && colorName !== 'GRAY') {
+                 colorIndex = COLOR_INDICES[colorName]; // Get index 0-5
+                 if (colorIndex === undefined) colorIndex = BLACK_INDEX; // Fallback if color name is weird
+            } else {
+                colorIndex = BLACK_INDEX; // Assign specific index for black faces
+            }
+
+            // Assign this index to all 4 vertices of this face
+            for (let i = 0; i < 4; ++i) {
+                faceColorIndices.push(colorIndex);
+            }
+        });
+
+        const faceColorIndexBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, faceColorIndexBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(faceColorIndices), gl.STATIC_DRAW);
+
+        const textureCoordBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, textureCoordBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoordinates), gl.STATIC_DRAW);   
+
         const positionBuffer = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
@@ -507,9 +664,29 @@ class Cubie {
 
         return {
             position: positionBuffer, normal: normalBuffer, color: colorBuffer,
+            textureCoord: textureCoordBuffer, faceColorIndex: faceColorIndexBuffer,
             indices: indexBuffer, vertexCount: indices.length,
         };
     }
+
+    updateFaceColorIndexBuffer() {
+        const faceColorIndices = [];
+        const geometryFaceOrder = [
+           FACE_INDICES.F, FACE_INDICES.B, FACE_INDICES.U, FACE_INDICES.D, FACE_INDICES.R, FACE_INDICES.L
+        ];
+        geometryFaceOrder.forEach(logicalFaceIndex => {
+           const colorName = this.faceColors[logicalFaceIndex];
+           let colorIndex = (colorName !== 'BLACK' && colorName !== 'GRAY') ? COLOR_INDICES[colorName] : BLACK_INDEX;
+            if (colorIndex === undefined) colorIndex = BLACK_INDEX; // Fallback
+           for (let i = 0; i < 4; ++i) { faceColorIndices.push(colorIndex); }
+        });
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.faceColorIndex);
+        // Use bufferSubData for potential performance gain
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, new Float32Array(faceColorIndices));
+        // gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(faceColorIndices), gl.DYNAMIC_DRAW); // Make dynamic if colors change
+        // Since indices are static *relative to the geometry faces*, maybe STATIC_DRAW in initBuffers is okay?
+        // Let's keep it dynamic for now like the color buffer, update it when colors change.
+   }
 
     updateColorBuffer() {
          // Match geometry order F, B, U, D, R, L
@@ -542,7 +719,17 @@ class Cubie {
         gl.vertexAttribPointer(programInfo.attribLocations.vertexColor, 4, gl.FLOAT, false, 0, 0);
         gl.enableVertexAttribArray(programInfo.attribLocations.vertexColor);
 
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.textureCoord);
+        gl.vertexAttribPointer(programInfo.attribLocations.textureCoord, 2, gl.FLOAT, false, 0, 0); // 2 components per coord
+        gl.enableVertexAttribArray(programInfo.attribLocations.textureCoord);
+
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.buffers.indices);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.faceColorIndex);
+        gl.vertexAttribPointer(
+            programInfo.attribLocations.faceColorIndex,
+            1, gl.FLOAT, false, 0, 0); // 1 component per vertex (the index)
+        gl.enableVertexAttribArray(programInfo.attribLocations.faceColorIndex);
 
         // --- Calculate Matrices ---
         const finalModelMatrix = mat4.create();
@@ -560,6 +747,8 @@ class Cubie {
 
         // --- Draw Call ---
         gl.drawElements(gl.TRIANGLES, this.buffers.vertexCount, gl.UNSIGNED_SHORT, 0);
+        gl.disableVertexAttribArray(programInfo.attribLocations.textureCoord);
+        gl.disableVertexAttribArray(programInfo.attribLocations.faceColorIndex);
     }
 }
 
@@ -596,6 +785,7 @@ class RubiksCube {
             cubie.currentLogicPos = vec3.clone(initialState.logicPos);
             cubie.faceColors = [...initialState.faceColors];
             cubie.updateModelMatrixBasedOnPosition();
+            cubie.updateFaceColorIndexBuffer();
             cubie.updateColorBuffer();
         });
         isAnimating = false;
@@ -753,6 +943,7 @@ class RubiksCube {
             }
 
             cubie.updateColorBuffer();
+            cubie.updateFaceColorIndexBuffer();
             // Reset the model matrix to reflect the final logical position
             cubie.updateModelMatrixBasedOnPosition();
         });
@@ -1139,8 +1330,8 @@ function drawSkybox(viewMatrix, projectionMatrix) {
     // gl.depthFunc(gl.LESS); // If your main scene uses LESS, uncomment this. LEQUAL is generally safe.
 }
 
-let enableReflection = false; // Start with reflection off
-let reflectionStrength = 0.4; // Default reflectivity (adjust as needed)
+let enableReflection = true; // Start with reflection off
+let reflectionStrength = 0.7; // Default reflectivity (adjust as needed)
 
 // --- NEW: Function to perform a random move ---
 function performRandomMove() {
@@ -1179,6 +1370,8 @@ function main() {
             vertexPosition: gl.getAttribLocation(shaderProgram, 'aVertexPosition'),
             vertexNormal: gl.getAttribLocation(shaderProgram, 'aVertexNormal'),
             vertexColor: gl.getAttribLocation(shaderProgram, 'aVertexColor'),
+            textureCoord: gl.getAttribLocation(shaderProgram, 'aTextureCoord'),
+            faceColorIndex: gl.getAttribLocation(shaderProgram, 'aFaceColorIndex'),
         },
         uniformLocations: {
             projectionMatrix: gl.getUniformLocation(shaderProgram, 'uProjectionMatrix'),
@@ -1195,6 +1388,15 @@ function main() {
             environmentSampler: gl.getUniformLocation(shaderProgram, 'uEnvironmentSampler'),
             enableReflection: gl.getUniformLocation(shaderProgram, 'uEnableReflection'),
             reflectivity: gl.getUniformLocation(shaderProgram, 'uReflectivity'),
+            textureSampler: gl.getUniformLocation(shaderProgram, 'uTextureSampler'),
+            materialMode: gl.getUniformLocation(shaderProgram, 'uMaterialMode'),
+            materialMode: gl.getUniformLocation(shaderProgram, 'uMaterialMode'),
+            textureSamplerWhite:  gl.getUniformLocation(shaderProgram, 'uTextureSamplerWhite'),
+            textureSamplerYellow: gl.getUniformLocation(shaderProgram, 'uTextureSamplerYellow'),
+            textureSamplerRed:    gl.getUniformLocation(shaderProgram, 'uTextureSamplerRed'),
+            textureSamplerOrange: gl.getUniformLocation(shaderProgram, 'uTextureSamplerOrange'),
+            textureSamplerBlue:   gl.getUniformLocation(shaderProgram, 'uTextureSamplerBlue'),
+            textureSamplerGreen:  gl.getUniformLocation(shaderProgram, 'uTextureSamplerGreen'),
         },
     };
 
@@ -1218,6 +1420,39 @@ function main() {
           console.error("Failed to initialize skybox shader program.");
           // Continue without skybox functionality
      }
+
+    faceTextures = loadTexture(FACE_TEXTURE_PATHS);
+
+    faceTexturesReadyCount = 0;
+    let texturesSuccessfullyLoaded = true; // Assume success initially
+    function textureLoadedCallback(error, colorName) {
+         if (error) {
+             texturesSuccessfullyLoaded = false;
+             // Keep counter going to know when all attempts are finished
+             console.error(`Failed to load texture for ${colorName}`);
+             showMessage(`紋理載入失敗: ${colorName}`, 4000);
+         } else {
+             console.log(`${colorName} texture ready.`);
+         }
+         faceTexturesReadyCount++;
+
+         if (faceTexturesReadyCount === TOTAL_FACE_TEXTURES) {
+              if (texturesSuccessfullyLoaded) {
+                   console.log("All face textures loaded successfully.");
+                   showMessage("所有面部紋理已載入 (按 T 切換)", 2000);
+              } else {
+                   console.error("Some face textures failed to load.");
+                   showMessage("部分面部紋理載入失敗", 4000);
+                   // Optionally force material mode back to 'color' if textures are critical
+                   // currentMaterialMode = 'color';
+              }
+         }
+    }
+
+    for (const colorName in FACE_TEXTURE_PATHS) {
+         const url = FACE_TEXTURE_PATHS[colorName];
+         faceTextures[colorName] = loadTexture(url, colorName, textureLoadedCallback);
+    }
 
 
     // --- Initialize Scene Objects ---
@@ -1259,6 +1494,12 @@ function main() {
             } else {
                 showMessage("禁用自動隨機旋轉 (按 E 鍵開啟)");
             }
+            return;
+        }
+
+        if (event.key.toUpperCase() === 'T') {
+            event.preventDefault();
+            toggleMaterialMode(); // Call the new toggle function
             return;
         }
 
@@ -1320,18 +1561,85 @@ function main() {
         gl.uniform3fv(programInfo.uniformLocations.lightPosition_World, lightPos);
         gl.uniform1f(programInfo.uniformLocations.shininess, 32.0);
 
-        if (isSkyboxReady && skyboxTexture) { // Only bind if cubemap is loaded
-            gl.activeTexture(gl.TEXTURE1); // Use texture unit 1 for environment map
-            gl.bindTexture(gl.TEXTURE_CUBE_MAP, skyboxTexture);
-            gl.uniform1i(programInfo.uniformLocations.environmentSampler, 1); // Tell shader sampler to use texture unit 1
-
-            // Set reflection toggle and strength (pass boolean as 0 or 1)
-            gl.uniform1i(programInfo.uniformLocations.enableReflection, enableReflection ? 1 : 0);
-            gl.uniform1f(programInfo.uniformLocations.reflectivity, reflectionStrength);
-        } else {
-             // If cubemap not ready, ensure reflection is disabled in shader
-             gl.uniform1i(programInfo.uniformLocations.enableReflection, 0);
+        let modeValue = 0; // Default: Color
+        if (currentMaterialMode === 'reflection') {
+            modeValue = 1;
+            enableReflection = true;
+        } else if (currentMaterialMode === 'texture') {
+            modeValue = 2;
+            enableReflection = false
         }
+        else if (currentMaterialMode === 'textureReflection') {
+            modeValue = 2; 
+            enableReflection = true; // Disable reflection if not in reflection mode 
+        }
+        gl.uniform1i(programInfo.uniformLocations.materialMode, modeValue);
+
+        // --- Set Reflection Uniforms (always set, shader uses uMaterialMode and uEnableReflection) ---
+         gl.uniform1i(programInfo.uniformLocations.enableReflection, enableReflection ? 1 : 0);
+         gl.uniform1f(programInfo.uniformLocations.reflectivity, reflectionStrength);
+        if (isSkyboxReady && skyboxTexture) {
+            gl.activeTexture(gl.TEXTURE1); // Environment map on unit 1
+            gl.bindTexture(gl.TEXTURE_CUBE_MAP, skyboxTexture);
+            gl.uniform1i(programInfo.uniformLocations.environmentSampler, 1);
+        } else {
+             // Still disable reflection explicitly in shader if cubemap fails?
+              // The 'enableReflection' uniform already handles this.
+              // We might need to bind a placeholder cubemap if the sampler is always expected?
+              // Let's assume the shader handles 'uEnableReflection' correctly.
+        }
+
+
+        // --- NEW: Bind 2D Texture if in Texture Mode ---
+        if (currentMaterialMode === 'texture') {
+            // Check if ALL required textures are loaded (or handle partially loaded state)
+            const allTexturesReady = (faceTexturesReadyCount === TOTAL_FACE_TEXTURES && texturesSuccessfullyLoaded);
+
+            if (allTexturesReady) {
+                // Bind each texture to a different unit (2-7) and set uniforms
+                gl.activeTexture(gl.TEXTURE2); // White on Unit 2
+                gl.bindTexture(gl.TEXTURE_2D, faceTextures['WHITE']);
+                gl.uniform1i(programInfo.uniformLocations.textureSamplerWhite, 2);
+
+                gl.activeTexture(gl.TEXTURE3); // Yellow on Unit 3
+                gl.bindTexture(gl.TEXTURE_2D, faceTextures['YELLOW']);
+                gl.uniform1i(programInfo.uniformLocations.textureSamplerYellow, 3);
+
+                gl.activeTexture(gl.TEXTURE4); // Red on Unit 4
+                gl.bindTexture(gl.TEXTURE_2D, faceTextures['RED']);
+                gl.uniform1i(programInfo.uniformLocations.textureSamplerRed, 4);
+
+                gl.activeTexture(gl.TEXTURE5); // Orange on Unit 5
+                gl.bindTexture(gl.TEXTURE_2D, faceTextures['ORANGE']);
+                gl.uniform1i(programInfo.uniformLocations.textureSamplerOrange, 5);
+
+                gl.activeTexture(gl.TEXTURE6); // Blue on Unit 6
+                gl.bindTexture(gl.TEXTURE_2D, faceTextures['BLUE']);
+                gl.uniform1i(programInfo.uniformLocations.textureSamplerBlue, 6);
+
+                gl.activeTexture(gl.TEXTURE7); // Green on Unit 7
+                gl.bindTexture(gl.TEXTURE_2D, faceTextures['GREEN']);
+                gl.uniform1i(programInfo.uniformLocations.textureSamplerGreen, 7);
+
+                // Optional: Bind black texture to unit 8 if used
+                // gl.activeTexture(gl.TEXTURE8);
+                // gl.bindTexture(gl.TEXTURE_2D, faceTextures['BLACK']);
+                // gl.uniform1i(programInfo.uniformLocations.textureSamplerBlack, 8);
+
+            } else {
+                // What to do if not all textures are ready?
+                // Option 1: Render nothing textured (shader falls back to vColor for all indices)
+                // Option 2: Force mode back to 'color' temporarily?
+                // Option 3: Bind placeholders (might lead to blue faces)
+                // Let's rely on the shader fallback to vColor for now.
+                // We must still ensure the sampler uniforms are set to *some* valid unit,
+                // otherwise WebGL might complain. Let's point them all to unit 0 (which might have nothing bound, or a placeholder)
+                gl.uniform1i(programInfo.uniformLocations.textureSamplerWhite, 0);
+                gl.uniform1i(programInfo.uniformLocations.textureSamplerYellow, 0);
+                // ... set all 6 sampler uniforms to 0 ...
+                gl.uniform1i(programInfo.uniformLocations.textureSamplerGreen, 0);
+            }
+       }
 
         // --- 3. Update Cube Animation ---
         if (isAnimating) {
@@ -1421,20 +1729,40 @@ window.toggleBackground = () => {
     }
 };
 
-window.toggleReflection = () => {
-    // Only allow enabling if the skybox texture is actually ready
-    if (!enableReflection && !isSkyboxReady) {
-         showMessage("天空盒紋理尚未載入，無法啟用反射。", 2000);
-         return;
+
+
+window.toggleMaterialMode = () => {
+    let nextMode = 'color'; // Default cycle back to color
+    let message = "材質切換為純色 (按 T 切換)";
+
+    if (currentMaterialMode === 'color') {
+
+        nextMode = 'reflection'; // Try reflection first if ready
+        message = "材質切換為環境反射 (按 T 切換)";
+        // Try reflection first if ready
+        
+    }
+    else if (currentMaterialMode === 'reflection') {
+        nextMode = 'texture'; // Then try texture
+        message = "材質切換為Texture Mapping (按 T 切換)";
     }
 
-    enableReflection = !enableReflection; // Toggle the state
-    if (enableReflection) {
-        showMessage(`啟用環境反射 (強度: ${reflectionStrength.toFixed(2)}) (按 M 切換)`, 2500);
-    } else {
-        showMessage("禁用環境反射 (按 M 切換)", 2500);
+    else if(currentMaterialMode === 'texture') {
+        nextMode = 'textureReflection';
+        message = "材質切換為環境反射 + Texture Mapping (按 T 切換)";
     }
-    // No need to explicitly call render, the next frame will pick up the new 'enableReflection' value
+    
+    else { // Currently 'texture', cycle back to 'color'
+        nextMode = 'color';
+        message = "材質切換為純色 (按 T 切換)";
+    }
+
+    currentMaterialMode = nextMode;
+    showMessage(message);
+
+     // Note: We are NOT automatically enabling/disabling the reflection *effect* here.
+     // The 'M' key still controls `enableReflection`.
+     // `currentMaterialMode` primarily controls which base calculation the shader uses.
 };
 
 window.scrambleCube = () => {
