@@ -13,6 +13,10 @@ let firstPersonCamera;
 let cameraMode = 'orbit'; // 'orbit' or 'firstPerson'
 let currentCamera;
 
+const NORMAL_MAP_PATH = './assets/normal.jpg'; 
+let normalMapTexture = null;
+let isNormalMapReady = false;
+
 // --- NEW: Background/Skybox variables ---
 let backgroundMode = 'color'; // 'color' or 'cubemap'
 let skyboxTexture = null;
@@ -51,7 +55,7 @@ FACE_COLOR_NAMES.forEach((name, index) => {
 });
 const BLACK_INDEX = 6;
 
-let currentMaterialMode = 'color'; // 'color', 'reflection', 'texture'
+let currentMaterialMode = 'color'; // 'color', 'reflection', 'texture' , 'bump'
 const CUBEMAP_BASE_PATH = './cubemap/'; // <--- IMPORTANT: Set path to your cubemap images
 const CUBEMAP_FACES = [
     CUBEMAP_BASE_PATH + 'posx.jpg', // Right
@@ -96,32 +100,38 @@ const COLORS = {
 const vsSource = `
     attribute vec4 aVertexPosition;
     attribute vec3 aVertexNormal;
-    attribute vec4 aVertexColor; // Still useful for non-textured modes or black faces
+    attribute vec4 aVertexColor;
     attribute vec2 aTextureCoord;
-    attribute float aFaceColorIndex; // <-- NEW: Index identifying the face's design color
+    attribute float aFaceColorIndex;
+    attribute vec3 aVertexTangent; // For bump mapping
 
     uniform mat4 uModelMatrix;
     uniform mat4 uViewMatrix;
     uniform mat4 uProjectionMatrix;
-    uniform mat3 uNormalMatrix;
+    uniform mat3 uNormalMatrix; // Transforms normals and tangents to world space
 
     varying highp vec3 vFragPos_World;
-    varying highp vec3 vNormal_World;
+    varying highp vec3 vNormal_World; // Geometric normal in world space
     varying lowp vec4 vColor;
     varying highp vec2 vTextureCoord;
-    varying highp float vFaceColorIndex; // <-- NEW: Pass index to fragment shader
+    varying highp float vFaceColorIndex;
+    varying highp vec3 vTangent_World;   // Tangent in world space
+    varying highp vec3 vBitangent_World; // Bitangent in world space
 
     void main(void) {
-        // ... (position, normal calculation)
         vec4 worldPos = uModelMatrix * aVertexPosition;
         vFragPos_World = worldPos.xyz / worldPos.w;
+        
         vNormal_World = normalize(uNormalMatrix * aVertexNormal);
+        vTangent_World = normalize(uNormalMatrix * aVertexTangent);
+        // Calculate bitangent: B = N x T. Ensure handedness is consistent with TBN matrix construction in FS.
+        vBitangent_World = normalize(cross(vNormal_World, vTangent_World)); 
+
         gl_Position = uProjectionMatrix * uViewMatrix * worldPos;
 
-        // Pass through
         vColor = aVertexColor;
         vTextureCoord = aTextureCoord;
-        vFaceColorIndex = aFaceColorIndex; // <-- NEW
+        vFaceColorIndex = aFaceColorIndex;
     }
 `;
 
@@ -129,15 +139,15 @@ const fsSource = `
     precision highp float;
 
     varying highp vec3 vFragPos_World;
-    varying highp vec3 vNormal_World;
+    varying highp vec3 vNormal_World;      // Geometric normal from vertex shader
     varying lowp vec4 vColor;
     varying highp vec2 vTextureCoord;
-    varying highp float vFaceColorIndex; // <-- NEW: Received face color index
+    varying highp float vFaceColorIndex;
+    varying highp vec3 vTangent_World;     // World-space tangent
+    varying highp vec3 vBitangent_World;   // World-space bitangent
 
-    // Lighting & Reflection Uniforms (same as before)
     uniform vec3 uEyePosition_World;
     uniform vec3 uLightPosition_World;
-    // ... other lighting/reflection uniforms ...
     uniform samplerCube uEnvironmentSampler;
     uniform bool uEnableReflection;
     uniform float uReflectivity;
@@ -145,90 +155,109 @@ const fsSource = `
     uniform vec3 uLightColor;
     uniform float uShininess;
 
-
-    // --- NEW: Multi-Texture Mapping Uniforms ---
-    uniform int uMaterialMode; // 0: Color, 1: Reflection, 2: Texture
-    uniform sampler2D uTextureSamplerWhite;  // Index 0
-    uniform sampler2D uTextureSamplerYellow; // Index 1
-    uniform sampler2D uTextureSamplerRed;    // Index 2
-    uniform sampler2D uTextureSamplerOrange; // Index 3
-    uniform sampler2D uTextureSamplerBlue;   // Index 4
-    uniform sampler2D uTextureSamplerGreen;  // Index 5
-    // Optional: uniform sampler2D uTextureSamplerBlack; // Index 6
+    uniform int uMaterialMode; // 0: Color, 1: Reflection, 2: Texture, 3: Bump Mapping
+    uniform sampler2D uTextureSamplerWhite;
+    uniform sampler2D uTextureSamplerYellow;
+    uniform sampler2D uTextureSamplerRed;
+    uniform sampler2D uTextureSamplerOrange;
+    uniform sampler2D uTextureSamplerBlue;
+    uniform sampler2D uTextureSamplerGreen;
+    uniform sampler2D uNormalSampler; // For Bump Mapping
 
     void main(void) {
-        // --- Basic Lighting Vectors ---
-        vec3 norm = normalize(vNormal_World);
-        vec3 lightDir = normalize(uLightPosition_World - vFragPos_World);
-        vec3 viewDir = normalize(uEyePosition_World - vFragPos_World);
-        vec3 reflectDirLight = reflect(-lightDir, norm);
+        vec3 normalToUse = normalize(vNormal_World); // Default to geometric normal
 
-        vec3 finalColor;
-        float finalAlpha = 1.0;
+        if (uMaterialMode == 3) { // --- Bump Mapping Active ---
+            // Sample normal from normal map (values are in [0,1] range)
+            vec3 normalMapSample = texture2D(uNormalSampler, vTextureCoord).rgb;
+            // Convert to [-1,1] range and normalize
+            vec3 tangentSpaceNormal = normalize(normalMapSample * 2.0 - 1.0);
 
-        // --- Determine final color based on material mode ---
-
-        if (uMaterialMode == 2) { // --- Texture Mapping Mode ---
-            vec4 texColor;
-            // Cast float index to int for safer comparison
-            int index = int(vFaceColorIndex + 0.5); // Add 0.5 to handle potential float inaccuracies
-
-            // Select texture based on index
-            if (index == 0) {       // WHITE
-                texColor = texture2D(uTextureSamplerWhite, vTextureCoord);
-            } else if (index == 1) { // YELLOW
-                texColor = texture2D(uTextureSamplerYellow, vTextureCoord);
-            } else if (index == 2) { // RED
-                texColor = texture2D(uTextureSamplerRed, vTextureCoord);
-            } else if (index == 3) { // ORANGE
-                texColor = texture2D(uTextureSamplerOrange, vTextureCoord);
-            } else if (index == 4) { // BLUE
-                texColor = texture2D(uTextureSamplerBlue, vTextureCoord);
-            } else if (index == 5) { // GREEN
-                texColor = texture2D(uTextureSamplerGreen, vTextureCoord);
-            } else {                 // BLACK or other default
-                texColor = vColor; // Use the base vertex color (should be black)
-                // Optional: texColor = texture2D(uTextureSamplerBlack, vTextureCoord);
-            }
-
-            // Combine texture with Phong lighting (same as before)
-            vec3 ambient = uAmbientLightColor * texColor.rgb;
-            float diff = max(dot(norm, lightDir), 0.0);
-            vec3 diffuse = uLightColor * diff * texColor.rgb;
-            float spec = pow(max(dot(viewDir, reflectDirLight), 0.0), uShininess);
-            vec3 specular = uLightColor * spec * vec3(0.8, 0.8, 0.8);
-            vec3 baseTexturedColor = ambient + diffuse + specular;
-            finalAlpha = texColor.a;
-
-            // Mix with reflection if enabled
-             if (uEnableReflection && index < 6) { // Only apply reflection to colored faces perhaps?
-                 vec3 reflectDirEnv = reflect(-viewDir, norm);
-                 vec3 reflectionColor = textureCube(uEnvironmentSampler, reflectDirEnv).rgb;
-                 finalColor = mix(baseTexturedColor, reflectionColor, uReflectivity);
-             } else {
-                  finalColor = baseTexturedColor;
-             }
-
-        } else { // --- Solid Color or Reflection Mode ---
-            // Calculate base lighting using vColor (remains the same)
-            vec3 ambient = uAmbientLightColor * vColor.rgb;
-            float diff = max(dot(norm, lightDir), 0.0);
-            vec3 diffuse = uLightColor * diff * vColor.rgb;
-            float spec = pow(max(dot(viewDir, reflectDirLight), 0.0), uShininess);
-            vec3 specular = uLightColor * spec * vec3(0.8, 0.8, 0.8);
-            vec3 lightingColor = ambient + diffuse + specular;
-
-            if (uMaterialMode == 1 && uEnableReflection) { // Reflection Mode + Effect Enabled
-                 vec3 reflectDirEnv = reflect(-viewDir, norm);
-                 vec3 reflectionColor = textureCube(uEnvironmentSampler, reflectDirEnv).rgb;
-                 finalColor = mix(lightingColor, reflectionColor, uReflectivity);
-            } else { // Solid Color Mode (or Reflection Mode but effect disabled)
-                 finalColor = lightingColor;
-            }
-            finalAlpha = vColor.a;
+            // Construct TBN matrix (transform from tangent space to world space)
+            // Ensure T, B, N are orthonormal and form a right-handed system
+            vec3 T = normalize(vTangent_World);
+            vec3 N_geom = normalize(vNormal_World); // Geometric normal for TBN basis
+            vec3 B = normalize(vBitangent_World); // Use pre-calculated bitangent
+                                                  // Or recalculate: vec3 B = normalize(cross(N_geom, T));
+                                                  // And re-orthogonalize T: T = normalize(cross(B, N_geom));
+            
+            // It's often more robust to ensure T, B, N_geom are orthogonal here:
+            // T = normalize(T - dot(T, N_geom) * N_geom); // Project T onto plane defined by N_geom
+            // B = normalize(cross(N_geom, T)); // Recalculate B based on new T and N_geom
+            
+            mat3 TBN = mat3(T, B, N_geom);
+            normalToUse = normalize(TBN * tangentSpaceNormal);
         }
 
-        gl_FragColor = vec4(finalColor, finalAlpha);
+        vec3 baseDiffuseColor;
+        float outputAlpha;
+
+        if (uMaterialMode == 2) { // --- Texture Mode ---
+                                  // This mode uses its own non-bumped normal for lighting/reflection
+            normalToUse = normalize(vNormal_World); // Explicitly use geometric normal
+
+            vec4 currentTexColor;
+            int faceColorIdx = int(vFaceColorIndex + 0.5);
+
+            if (faceColorIdx == 0) { currentTexColor = texture2D(uTextureSamplerWhite, vTextureCoord); }
+            else if (faceColorIdx == 1) { currentTexColor = texture2D(uTextureSamplerYellow, vTextureCoord); }
+            else if (faceColorIdx == 2) { currentTexColor = texture2D(uTextureSamplerRed, vTextureCoord); }
+            else if (faceColorIdx == 3) { currentTexColor = texture2D(uTextureSamplerOrange, vTextureCoord); }
+            else if (faceColorIdx == 4) { currentTexColor = texture2D(uTextureSamplerBlue, vTextureCoord); }
+            else if (faceColorIdx == 5) { currentTexColor = texture2D(uTextureSamplerGreen, vTextureCoord); }
+            else { currentTexColor = vColor; } // Fallback for black/non-sticker parts
+
+            baseDiffuseColor = currentTexColor.rgb;
+            outputAlpha = currentTexColor.a;
+        } else { // --- Color (0), Reflection (1), or Bump (3) Mode ---
+                 // These use vColor as base, and normalToUse is already set
+            baseDiffuseColor = vColor.rgb;
+            outputAlpha = vColor.a;
+        }
+
+        // --- Lighting Calculations ---
+        vec3 lightDir = normalize(uLightPosition_World - vFragPos_World);
+        vec3 viewDir = normalize(uEyePosition_World - vFragPos_World);
+        
+        // Ambient
+        vec3 ambient = uAmbientLightColor * baseDiffuseColor;
+        // Diffuse
+        float NdotL = max(dot(normalToUse, lightDir), 0.0);
+        vec3 diffuse = uLightColor * NdotL * baseDiffuseColor;
+        // Specular (Phong)
+        vec3 reflectDir_light = reflect(-lightDir, normalToUse);
+        float RdotV = pow(max(dot(viewDir, reflectDir_light), 0.0), uShininess);
+        vec3 specular = uLightColor * RdotV * vec3(0.8, 0.8, 0.8); // Assuming white specular highlights
+
+        vec3 litColor = ambient + diffuse + specular;
+        vec3 finalColor = litColor;
+
+        // --- Environment Reflection ---
+        bool applyReflectionThisPixel = false;
+        if (uEnableReflection) {
+            if (uMaterialMode == 1) { // Reflection Mode
+                if (!(baseDiffuseColor.r < 0.16 && baseDiffuseColor.g < 0.16 && baseDiffuseColor.b < 0.16)) { // If not black
+                    applyReflectionThisPixel = true;
+                }
+            } else if (uMaterialMode == 2) { // Texture Mode
+                int faceColorIdx = int(vFaceColorIndex + 0.5);
+                if (faceColorIdx < 6) { // Only on colored stickers
+                    applyReflectionThisPixel = true;
+                }
+            } else if (uMaterialMode == 3) { // Bump Mapping Mode
+                if (!(baseDiffuseColor.r < 0.16 && baseDiffuseColor.g < 0.16 && baseDiffuseColor.b < 0.16)) { // If not black
+                    applyReflectionThisPixel = true;
+                }
+            }
+        }
+
+        if (applyReflectionThisPixel) {
+            vec3 reflectDir_env = reflect(-viewDir, normalToUse); // Reflection uses the same normal as lighting
+            vec3 reflectionColor = textureCube(uEnvironmentSampler, reflectDir_env).rgb;
+            finalColor = mix(litColor, reflectionColor, uReflectivity);
+        }
+
+        gl_FragColor = vec4(finalColor, outputAlpha);
     }
 `;
 
@@ -637,6 +666,29 @@ class Cubie {
             }
         });
 
+        const tangents = [];
+        // Tangent for each face (repeated for 4 vertices per face)
+        // Order: F, B, U, D, R, L (same as your geometryFaceOrder and faceNormals)
+        const faceTangentsData = [
+            [1.0, 0.0, 0.0], // Front face (tangent along +X)
+            [1.0, 0.0, 0.0], // Back face (tangent along +X, assuming UVs are consistent)
+            [1.0, 0.0, 0.0], // Top face (tangent along +X)
+            [1.0, 0.0, 0.0], // Bottom face (tangent along +X)
+            [0.0, 0.0, -1.0], // Right face (tangent along -Z)
+            [0.0, 0.0, 1.0]  // Left face (tangent along +Z)
+        ];
+
+        geometryFaceOrder.forEach((_, index) => { // Use index to get the correct tangent
+            const tangent = faceTangentsData[index];
+            for (let i = 0; i < 4; ++i) { // 4 vertices per face
+                tangents.push(...tangent);
+            }
+        });
+        
+        const tangentBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, tangentBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(tangents), gl.STATIC_DRAW);
+
         const faceColorIndexBuffer = gl.createBuffer();
         gl.bindBuffer(gl.ARRAY_BUFFER, faceColorIndexBuffer);
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(faceColorIndices), gl.STATIC_DRAW);
@@ -663,7 +715,7 @@ class Cubie {
 
         return {
             position: positionBuffer, normal: normalBuffer, color: colorBuffer,
-            textureCoord: textureCoordBuffer, faceColorIndex: faceColorIndexBuffer,
+            textureCoord: textureCoordBuffer, faceColorIndex: faceColorIndexBuffer, tangent: tangentBuffer,
             indices: indexBuffer, vertexCount: indices.length,
         };
     }
@@ -705,6 +757,10 @@ class Cubie {
     }
 
     draw(programInfo, viewMatrix, projectionMatrix, parentModelMatrix = mat4.create()) {
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.tangent);
+        gl.vertexAttribPointer(programInfo.attribLocations.vertexTangent, 3, gl.FLOAT, false, 0, 0);
+        gl.enableVertexAttribArray(programInfo.attribLocations.vertexTangent);
         // --- Setup Cube Attributes ---
         gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.position);
         gl.vertexAttribPointer(programInfo.attribLocations.vertexPosition, 3, gl.FLOAT, false, 0, 0);
@@ -723,6 +779,8 @@ class Cubie {
         gl.enableVertexAttribArray(programInfo.attribLocations.textureCoord);
 
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, this.buffers.indices);
+
+        
 
         gl.bindBuffer(gl.ARRAY_BUFFER, this.buffers.faceColorIndex);
         gl.vertexAttribPointer(
@@ -748,6 +806,7 @@ class Cubie {
         gl.drawElements(gl.TRIANGLES, this.buffers.vertexCount, gl.UNSIGNED_SHORT, 0);
         gl.disableVertexAttribArray(programInfo.attribLocations.textureCoord);
         gl.disableVertexAttribArray(programInfo.attribLocations.faceColorIndex);
+        gl.disableVertexAttribArray(programInfo.attribLocations.vertexTangent);
     }
 }
 
@@ -1371,6 +1430,7 @@ function main() {
             vertexColor: gl.getAttribLocation(shaderProgram, 'aVertexColor'),
             textureCoord: gl.getAttribLocation(shaderProgram, 'aTextureCoord'),
             faceColorIndex: gl.getAttribLocation(shaderProgram, 'aFaceColorIndex'),
+            vertexTangent: gl.getAttribLocation(shaderProgram, 'aVertexTangent'),
         },
         uniformLocations: {
             projectionMatrix: gl.getUniformLocation(shaderProgram, 'uProjectionMatrix'),
@@ -1396,6 +1456,7 @@ function main() {
             textureSamplerOrange: gl.getUniformLocation(shaderProgram, 'uTextureSamplerOrange'),
             textureSamplerBlue:   gl.getUniformLocation(shaderProgram, 'uTextureSamplerBlue'),
             textureSamplerGreen:  gl.getUniformLocation(shaderProgram, 'uTextureSamplerGreen'),
+            normalSampler: gl.getUniformLocation(shaderProgram, 'uNormalSampler'),
         },
     };
 
@@ -1419,6 +1480,16 @@ function main() {
           console.error("Failed to initialize skybox shader program.");
           // Continue without skybox functionality
      }
+
+    normalMapTexture = loadTexture(NORMAL_MAP_PATH, "NormalMap", (err, name) => { // Re-use loadTexture or make a specific one
+        if (err) {
+            showMessage("法線貼圖載入失敗。", 3000);
+            isNormalMapReady = false;
+        } else {
+            showMessage("法線貼圖已載入 (按 T 切換)", 2000);
+            isNormalMapReady = true;
+        }
+    });
 
     faceTextures = loadTexture(FACE_TEXTURE_PATHS);
 
@@ -1571,6 +1642,15 @@ function main() {
             modeValue = 2; 
             enableReflection = true; // Disable reflection if not in reflection mode 
         }
+        else if( currentMaterialMode === 'bump') {
+            enableReflection = false;
+            modeValue = 3;
+        }
+        else if( currentMaterialMode === 'bumpReflection') {
+            enableReflection = true;
+            modeValue = 3;
+        }
+
         gl.uniform1i(programInfo.uniformLocations.materialMode, modeValue);
 
         // --- Set Reflection Uniforms (always set, shader uses uMaterialMode and uEnableReflection) ---
@@ -1585,6 +1665,12 @@ function main() {
               // The 'enableReflection' uniform already handles this.
               // We might need to bind a placeholder cubemap if the sampler is always expected?
               // Let's assume the shader handles 'uEnableReflection' correctly.
+        }
+
+        if (currentMaterialMode === 'bump' || currentMaterialMode === 'bumpReflection' && isNormalMapReady && normalMapTexture) {
+            gl.activeTexture(gl.TEXTURE8); // Use a new texture unit (e.g., 8)
+            gl.bindTexture(gl.TEXTURE_2D, normalMapTexture);
+            gl.uniform1i(programInfo.uniformLocations.normalSampler, 8);
         }
 
 
@@ -1748,6 +1834,16 @@ window.toggleMaterialMode = () => {
     else if(currentMaterialMode === 'texture') {
         nextMode = 'textureReflection';
         message = "材質切換為環境反射 + Texture Mapping (按 T 切換)";
+    }
+
+    else if(currentMaterialMode === 'textureReflection') {
+        nextMode = 'bump';
+        message = "材質切換為 bump mapping (按 T 切換)";
+    }
+
+    else if(currentMaterialMode === 'bump') {
+        nextMode = 'bumpReflection';
+        message = "材質切換為 bump mapping (按 T 切換)";
     }
     
     else { // Currently 'texture', cycle back to 'color'
