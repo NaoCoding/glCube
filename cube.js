@@ -13,6 +13,12 @@ let firstPersonCamera;
 let cameraMode = 'orbit'; // 'orbit' or 'firstPerson'
 let currentCamera;
 
+// 在檔案頂部新增平台相關變數
+const PLATFORM_SIZE = 10.0; // 平台大小
+const PLATFORM_HEIGHT = 0.3; // 平台厚度
+const PLATFORM_COLOR = [0.4, 0.4, 0.45, 1.0]; // 平台基礎顏色
+let platformBuffers = null; // 平台的緩衝區
+
 const NORMAL_MAP_PATH = './assets/normal.jpg'; 
 let normalMapTexture = null;
 let isNormalMapReady = false;
@@ -317,6 +323,144 @@ function initWebGL(canvas) {
     gl.cullFace(gl.BACK);
 
     return gl;
+}
+
+// 在 initWebGL 函數後新增初始化平台的函數
+function initPlatformBuffers() {
+    const s = PLATFORM_SIZE / 2;
+    const h = PLATFORM_HEIGHT / 2;
+    
+    // 頂面和底面頂點
+    const positions = [
+        // 頂面 (Y = h)
+        -s, h, -s,  s, h, -s,  s, h, s, -s, h, s,
+        // 底面 (Y = -h)
+        -s, -h, -s, -s, -h, s, s, -h, s, s, -h, -s
+    ];
+    
+    // 法線 (頂面向上，底面向下)
+    const normals = [
+        0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, // 頂面
+        0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0 // 底面
+    ];
+    
+    // 切線 (沿X軸)
+    const tangents = [
+        1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0,
+        1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0
+    ];
+    
+    // 紋理座標
+    const textureCoords = [
+        0, 0, 1, 0, 1, 1, 0, 1, // 頂面
+        0, 0, 0, 1, 1, 1, 1, 0  // 底面
+    ];
+    
+    // 顏色 (全部使用平台顏色)
+    const colors = [];
+    for (let i = 0; i < 8; i++) {
+        colors.push(...PLATFORM_COLOR);
+    }
+    
+    // 面顏色索引 (全部使用黑色索引)
+    const faceColorIndices = new Array(8).fill(BLACK_INDEX);
+    
+    // 索引
+    const indices = [
+        0, 1, 2, 0, 2, 3, // 頂面
+        4, 5, 6, 4, 6, 7  // 底面
+    ];
+    
+    // 創建緩衝區
+    const positionBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+    
+    const normalBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, normalBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(normals), gl.STATIC_DRAW);
+    
+    const tangentBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, tangentBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(tangents), gl.STATIC_DRAW);
+    
+    const textureCoordBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, textureCoordBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoords), gl.STATIC_DRAW);
+    
+    const colorBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+    
+    const faceColorIndexBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, faceColorIndexBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(faceColorIndices), gl.STATIC_DRAW);
+    
+    const indexBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
+    
+    return {
+        position: positionBuffer,
+        normal: normalBuffer,
+        tangent: tangentBuffer,
+        textureCoord: textureCoordBuffer,
+        color: colorBuffer,
+        faceColorIndex: faceColorIndexBuffer,
+        indices: indexBuffer,
+        vertexCount: indices.length
+    };
+}
+
+function drawPlatform(programInfo, viewMatrix, projectionMatrix) {
+    if (!platformBuffers) return;
+    
+    // 設置模型矩陣 (平台位於魔術方塊下方)
+    const modelMatrix = mat4.create();
+    mat4.translate(modelMatrix, modelMatrix, [0, -CUBE_UNIT_SIZE * 3, 0]);
+    
+    // 綁定緩衝區
+    gl.bindBuffer(gl.ARRAY_BUFFER, platformBuffers.position);
+    gl.vertexAttribPointer(programInfo.attribLocations.vertexPosition, 3, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
+    
+    gl.bindBuffer(gl.ARRAY_BUFFER, platformBuffers.normal);
+    gl.vertexAttribPointer(programInfo.attribLocations.vertexNormal, 3, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(programInfo.attribLocations.vertexNormal);
+    
+    gl.bindBuffer(gl.ARRAY_BUFFER, platformBuffers.color);
+    gl.vertexAttribPointer(programInfo.attribLocations.vertexColor, 4, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(programInfo.attribLocations.vertexColor);
+    
+    gl.bindBuffer(gl.ARRAY_BUFFER, platformBuffers.textureCoord);
+    gl.vertexAttribPointer(programInfo.attribLocations.textureCoord, 2, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(programInfo.attribLocations.textureCoord);
+    
+    gl.bindBuffer(gl.ARRAY_BUFFER, platformBuffers.tangent);
+    gl.vertexAttribPointer(programInfo.attribLocations.vertexTangent, 3, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(programInfo.attribLocations.vertexTangent);
+    
+    gl.bindBuffer(gl.ARRAY_BUFFER, platformBuffers.faceColorIndex);
+    gl.vertexAttribPointer(programInfo.attribLocations.faceColorIndex, 1, gl.FLOAT, false, 0, 0);
+    gl.enableVertexAttribArray(programInfo.attribLocations.faceColorIndex);
+    
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, platformBuffers.indices);
+    
+    // 設置矩陣
+    gl.uniformMatrix4fv(programInfo.uniformLocations.modelMatrix, false, modelMatrix);
+    
+    // 計算法線矩陣
+    const normalMatrix = mat3.create();
+    mat3.normalFromMat4(normalMatrix, modelMatrix);
+    gl.uniformMatrix3fv(programInfo.uniformLocations.normalMatrix, false, normalMatrix);
+    
+    // 繪製平台
+    gl.drawElements(gl.TRIANGLES, platformBuffers.vertexCount, gl.UNSIGNED_SHORT, 0);
+    
+    // 禁用屬性陣列
+    gl.disableVertexAttribArray(programInfo.attribLocations.textureCoord);
+    gl.disableVertexAttribArray(programInfo.attribLocations.faceColorIndex);
+    gl.disableVertexAttribArray(programInfo.attribLocations.vertexTangent);
 }
 
 // --- Shader Loading/Linking (no changes needed) ---
@@ -1530,6 +1674,7 @@ function main() {
     orbitCamera = new OrbitCamera(canvas);
     firstPersonCamera = new FirstPersonCamera(canvas);
     currentCamera = orbitCamera; // Start with orbit camera
+    platformBuffers = initPlatformBuffers();
 
     // --- Event Listeners ---
     document.addEventListener('keydown', (event) => {
@@ -1606,6 +1751,9 @@ function main() {
         if (backgroundMode === 'color') {
             gl.clearColor(SOLID_BG_COLOR[0], SOLID_BG_COLOR[1], SOLID_BG_COLOR[2], SOLID_BG_COLOR[3]);
             gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+            if (platformBuffers) {
+                drawPlatform(programInfo, currentCamera.viewMatrix, currentCamera.projectionMatrix);
+            }
         } else if (backgroundMode === 'cubemap' && isSkyboxReady) { // Check if skybox is ready
             // Clear only depth buffer before drawing skybox
             gl.clear(gl.DEPTH_BUFFER_BIT);
