@@ -320,7 +320,7 @@ function initMiniCubes() {
         const radius = CUBE_UNIT_SIZE * 4 + Math.random() * CUBE_UNIT_SIZE * 2;
         const angle = (Math.PI * 2 * i) / MINI_CUBE_COUNT;
         const speed = 0.3 + Math.random() * 0.3;
-        const size = 0.2 + Math.random() * 0.15;
+        const size = 0.5 + Math.random() * 0.15;
         miniCubes.push(new MiniCube(radius, angle, speed, size));
     }
 }
@@ -742,10 +742,16 @@ class MiniCube {
 
     randomizeFaceColors() {
         // 遍历所有面
+        const availableColors = [...FACE_COLOR_NAMES];
+    
+        // 遍历所有面
         for (let i = 0; i < 6; i++) {
-            // 随机选择一个标准颜色名称
-            const randomColorIndex = Math.floor(Math.random() * FACE_COLOR_NAMES.length);
-            this.cubie.faceColors[i] = FACE_COLOR_NAMES[randomColorIndex];
+            // 从剩余颜色中随机选择一个
+            const randomIndex = Math.floor(Math.random() * availableColors.length);
+            this.cubie.faceColors[i] = availableColors[randomIndex];
+            
+            // 从可用颜色中移除已使用的颜色
+            availableColors.splice(randomIndex, 1);
         }
     }
 }
@@ -1973,6 +1979,13 @@ function main() {
         // Pass the *cube's* programInfo and current camera matrices
         rubiksCube.draw(programInfo, currentCamera.viewMatrix, currentCamera.projectionMatrix);
         
+        if(isOrbitingCubesEnabled){
+            miniCubes.forEach(miniCube => {
+                miniCube.update(0.016);
+                miniCube.draw(programInfo, currentCamera.viewMatrix, currentCamera.projectionMatrix);
+            });
+        }
+        /*
         if (isOrbitingCubesEnabled) {
             // 保存当前材质模式
             const savedMaterialMode = currentMaterialMode;
@@ -2005,7 +2018,7 @@ function main() {
             }
             gl.uniform1i(programInfo.uniformLocations.materialMode, modeValue);
             gl.uniform1i(programInfo.uniformLocations.enableReflection, enableReflection ? 1 : 0);
-        }
+        }*/
         // --- 6. Request Next Frame ---
         requestAnimationFrame(render);
     }
