@@ -86,6 +86,11 @@ const CUBIE_SIZE = 0.95; // Size of a single cubie
 const CUBIE_SPACING = 0.05; // Space between cubies
 const CUBE_UNIT_SIZE = CUBIE_SIZE + CUBIE_SPACING;
 
+let miniCubes = [];
+let isOrbitingCubesEnabled = false;
+const MINI_CUBE_COUNT = 5;
+
+
 // Standard Rubik's Cube Colors (RGB, A=1.0)
 const COLORS = {
     WHITE:  [1.0, 1.0, 1.0, 1.0],
@@ -160,6 +165,7 @@ const fsSource = `
     uniform vec3 uAmbientLightColor;
     uniform vec3 uLightColor;
     uniform float uShininess;
+    uniform int uEnableMiniCubeReflections;
 
     uniform int uMaterialMode; // 0: Color, 1: Reflection, 2: Texture, 3: Bump Mapping
     uniform sampler2D uTextureSamplerWhite;
@@ -260,9 +266,15 @@ const fsSource = `
         if (applyReflectionThisPixel) {
             vec3 reflectDir_env = reflect(-viewDir, normalToUse); // Reflection uses the same normal as lighting
             vec3 reflectionColor = textureCube(uEnvironmentSampler, reflectDir_env).rgb;
+            if (uEnableMiniCubeReflections == 1) {
+                // Add some variation to the reflection based on the view direction
+                // This creates an illusion of reflecting objects without actually rendering them
+                float variation = sin(reflectDir_env.x * 10.0) * sin(reflectDir_env.y * 8.0) * 0.2;
+                reflectionColor = mix(reflectionColor, vec3(1.0, 0.9, 0.8), variation * uReflectivity * 0.5);
+            }
+            
             finalColor = mix(litColor, reflectionColor, uReflectivity);
         }
-
         gl_FragColor = vec4(finalColor, outputAlpha);
     }
 `;
@@ -301,6 +313,17 @@ const skyboxFsSource = `
         gl_FragColor = textureCube(uSkyboxSampler, normalize(vTextureCoord));
     }
 `;
+
+function initMiniCubes() {
+    miniCubes = [];
+    for (let i = 0; i < MINI_CUBE_COUNT; i++) {
+        const radius = CUBE_UNIT_SIZE * 4 + Math.random() * CUBE_UNIT_SIZE * 2;
+        const angle = (Math.PI * 2 * i) / MINI_CUBE_COUNT;
+        const speed = 0.3 + Math.random() * 0.3;
+        const size = 0.2 + Math.random() * 0.15;
+        miniCubes.push(new MiniCube(radius, angle, speed, size));
+    }
+}
 
 
 // --- WebGL Initialization ---
@@ -677,6 +700,56 @@ function initSkyboxBuffers() {
         vertexCount: 36, // 6 faces * 2 triangles/face * 3 vertices/triangle
     };
 }
+
+class MiniCube {
+    constructor(radius, angle, speed, size) {
+        this.radius = radius;        // Distance from main cube
+        this.angle = angle;          // Initial angle
+        this.speed = speed;          // Rotation speed
+        this.size = size;            // Size relative to main cube
+        this.modelMatrix = mat4.create();
+        this.cubie = new Cubie(`mini_cubie`, vec3.fromValues(0, 0, 0));
+        
+        this.randomizeFaceColors();
+        
+        // 更新颜色缓冲区
+        this.cubie.updateColorBuffer();
+        this.cubie.updateFaceColorIndexBuffer();
+        
+        this.updatePosition();
+    }
+
+    updatePosition() {
+        // Calculate position based on orbit
+        const x = this.radius * Math.cos(this.angle);
+        const y = this.radius * Math.sin(this.angle) * 0.5; // Elliptical orbit
+        const z = this.radius * Math.sin(this.angle);
+        
+        // Update model matrix
+        mat4.identity(this.modelMatrix);
+        mat4.translate(this.modelMatrix, this.modelMatrix, [x, y, z]);
+        mat4.scale(this.modelMatrix, this.modelMatrix, [this.size, this.size, this.size]);
+    }
+
+    update(deltaTime) {
+        this.angle += this.speed * deltaTime;
+        this.updatePosition();
+    }
+
+    draw(programInfo, viewMatrix, projectionMatrix) {
+        this.cubie.draw(programInfo, viewMatrix, projectionMatrix, this.modelMatrix);
+    }
+
+    randomizeFaceColors() {
+        // 遍历所有面
+        for (let i = 0; i < 6; i++) {
+            // 随机选择一个标准颜色名称
+            const randomColorIndex = Math.floor(Math.random() * FACE_COLOR_NAMES.length);
+            this.cubie.faceColors[i] = FACE_COLOR_NAMES[randomColorIndex];
+        }
+    }
+}
+
 
 // --- Cubie Class (no changes needed inside the class itself) ---
 class Cubie {
@@ -1601,6 +1674,7 @@ function main() {
             textureSamplerBlue:   gl.getUniformLocation(shaderProgram, 'uTextureSamplerBlue'),
             textureSamplerGreen:  gl.getUniformLocation(shaderProgram, 'uTextureSamplerGreen'),
             normalSampler: gl.getUniformLocation(shaderProgram, 'uNormalSampler'),
+            enableMiniCubeReflections: gl.getUniformLocation(shaderProgram, 'uEnableMiniCubeReflections'),
         },
     };
 
@@ -1676,6 +1750,8 @@ function main() {
     currentCamera = orbitCamera; // Start with orbit camera
     platformBuffers = initPlatformBuffers();
 
+    initMiniCubes();
+
     // --- Event Listeners ---
     document.addEventListener('keydown', (event) => {
         // Allow camera/background/reflection toggle even during animation
@@ -1715,6 +1791,12 @@ function main() {
         if (event.key.toUpperCase() === 'T') {
             event.preventDefault();
             toggleMaterialMode(); // Call the new toggle function
+            return;
+        }
+
+        if (event.key.toUpperCase() === 'O') {
+            event.preventDefault();
+            toggleOrbitingCubes();
             return;
         }
 
@@ -1821,6 +1903,9 @@ function main() {
             gl.uniform1i(programInfo.uniformLocations.normalSampler, 8);
         }
 
+        gl.uniform1i(programInfo.uniformLocations.enableMiniCubeReflections, 
+            isOrbitingCubesEnabled ? 1 : 0);
+
 
         // --- NEW: Bind 2D Texture if in Texture Mode ---
         if (currentMaterialMode === 'texture') {
@@ -1887,7 +1972,40 @@ function main() {
         // --- 5. Draw Rubik's Cube ---
         // Pass the *cube's* programInfo and current camera matrices
         rubiksCube.draw(programInfo, currentCamera.viewMatrix, currentCamera.projectionMatrix);
-
+        
+        if (isOrbitingCubesEnabled) {
+            // 保存当前材质模式
+            const savedMaterialMode = currentMaterialMode;
+            const savedEnableReflection = enableReflection;
+            
+            // 设置小方块专用材质模式
+            currentMaterialMode = "color";
+            enableReflection = false; // 或根据需要设置为true
+            gl.uniform1i(programInfo.uniformLocations.materialMode, 0); // 0代表颜色模式
+            gl.uniform1i(programInfo.uniformLocations.enableReflection, enableReflection ? 1 : 0);
+            
+            // 更新和绘制每个小方块
+            miniCubes.forEach(miniCube => {
+                miniCube.update(0.016);
+                miniCube.draw(programInfo, currentCamera.viewMatrix, currentCamera.projectionMatrix);
+            });
+            
+            // 恢复原来的材质模式
+            currentMaterialMode = savedMaterialMode;
+            enableReflection = savedEnableReflection;
+            
+            // 恢复原来的着色器uniform设置
+            let modeValue = 0;
+            if (currentMaterialMode === 'reflection') {
+                modeValue = 1;
+            } else if (currentMaterialMode === 'texture' || currentMaterialMode === 'textureReflection') {
+                modeValue = 2;
+            } else if (currentMaterialMode === 'bump' || currentMaterialMode === 'bumpReflection') {
+                modeValue = 3;
+            }
+            gl.uniform1i(programInfo.uniformLocations.materialMode, modeValue);
+            gl.uniform1i(programInfo.uniformLocations.enableReflection, enableReflection ? 1 : 0);
+        }
         // --- 6. Request Next Frame ---
         requestAnimationFrame(render);
     }
@@ -1927,6 +2045,20 @@ window.resetCamera = () => {
     currentCamera.reset();
     showMessage("相機視角已重置。");
 };
+
+window.toggleOrbitingCubes = () => {
+    isOrbitingCubesEnabled = !isOrbitingCubesEnabled;
+    
+    if (isOrbitingCubesEnabled) {
+        if (miniCubes.length === 0) {
+            initMiniCubes();
+        }
+        showMessage("小方塊環繞已啟用 (按 O 鍵切換)");
+    } else {
+        showMessage("小方塊環繞已禁用 (按 O 鍵切換)");
+    }
+};
+
 
 window.toggleCameraMode = () => {
     const canvas = document.getElementById('rubiksCubeCanvas');
